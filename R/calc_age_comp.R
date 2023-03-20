@@ -13,7 +13,7 @@
 #' 
 
 calc_age_comp <- function(racebase_tables = NULL,
-                               size_comp = NULL) {
+                          size_comp = NULL) {
   
   ## Extract data
   haul <- racebase_tables$haul
@@ -22,15 +22,15 @@ calc_age_comp <- function(racebase_tables = NULL,
   
   ## Narrow size_comp so that each record refers to a sex/length combination
   size_comp <- 
-    rbind(data.frame(size_comp[, c("YEAR", "STRATUM", 'SPECIES_CODE', 
+    rbind(data.frame(size_comp[, c("SURVEY", "YEAR", "STRATUM", 'SPECIES_CODE', 
                                    "LENGTH_MM")],
                      SEX = 1, 
                      sizepop = size_comp$MALES ),
-          data.frame(size_comp[, c("YEAR", "STRATUM", 'SPECIES_CODE', 
+          data.frame(size_comp[, c("SURVEY", "YEAR", "STRATUM", 'SPECIES_CODE', 
                                    "LENGTH_MM")],
                      SEX = 2, 
                      sizepop = size_comp$FEMALES),
-          data.frame(size_comp[, c("YEAR", "STRATUM", 'SPECIES_CODE',
+          data.frame(size_comp[, c("SURVEY", "YEAR", "STRATUM", 'SPECIES_CODE',
                                    "LENGTH_MM")],
                      SEX = 3,
                      sizepop = size_comp$UNSEXED)
@@ -43,6 +43,12 @@ calc_age_comp <- function(racebase_tables = NULL,
                     y = haul[, c("HAULJOIN", "YEAR")],
                     by = "HAULJOIN",
                     all.x = TRUE)
+  
+  ## attach Survey name based on CRUISEJOIN
+  specimen <-
+    merge(x = specimen,
+          y = racebase_tables$cruise[, c("CRUISEJOIN", "SURVEY")],
+          by = c("CRUISEJOIN"))
   
   ## In AIGOA, specimen from hauls where ABUNDANCE_HAUL == "N" are included in 
   ## the age composition calculation. These will not be included in the standard
@@ -59,15 +65,15 @@ calc_age_comp <- function(racebase_tables = NULL,
   ##     and length-l for station-j in stratum-i.
   s_ijklm <- rbind(
     ## Aggregate FEMALES and MALES
-    stats::aggregate(FREQ ~ YEAR + SPECIES_CODE + SEX + LENGTH_MM + AGE,
+    stats::aggregate(FREQ ~ SURVEY + YEAR + SPECIES_CODE + SEX + LENGTH_MM + AGE,
                      data = specimen,
                      FUN = sum),
     
     ## For UNSEXED, we pool MALES and FEMALES TOGETHER
-    cbind(stats::aggregate(FREQ ~ YEAR + SPECIES_CODE + LENGTH_MM + AGE,
+    cbind(stats::aggregate(FREQ ~ SURVEY + YEAR + SPECIES_CODE + LENGTH_MM + AGE,
                            data = specimen,
                            FUN = sum), 
-          SEX = 3)[, c("YEAR", "SPECIES_CODE", "SEX", 
+          SEX = 3)[, c("SURVEY", "YEAR", "SPECIES_CODE", "SEX", 
                        "LENGTH_MM", "AGE", "FREQ")])
   
   ## Split the s_ijklm df by year, species, sex, and length bin 
@@ -78,7 +84,8 @@ calc_age_comp <- function(racebase_tables = NULL,
   p_klm <- 
     do.call(what = rbind, 
             args = lapply(X = split(x = s_ijklm, 
-                                    f = list(s_ijklm$YEAR, 
+                                    f = list(s_ijklm$SURVEY,
+                                             s_ijklm$YEAR, 
                                              s_ijklm$SPECIES_CODE, 
                                              s_ijklm$LENGTH_MM, 
                                              s_ijklm$SEX)),
@@ -91,7 +98,7 @@ calc_age_comp <- function(racebase_tables = NULL,
   ##    year, species, sex, and length. 
   age_comp <- merge(x = p_klm,
                     y = size_comp,
-                    by = c("YEAR", "SPECIES_CODE", "SEX", "LENGTH_MM"),
+                    by = c("SURVEY", "YEAR", "SPECIES_CODE", "SEX", "LENGTH_MM"),
                     # all.x = TRUE,
                     all.y = TRUE
   )
@@ -103,12 +110,24 @@ calc_age_comp <- function(racebase_tables = NULL,
   
   ## Then the numbers at age is the product of the age_frac and the numbers 
   ##    at length
-
   
   age_comp$AGEPOP <- age_comp$age_frac * age_comp$sizepop
   
-  return(  aggregate(AGEPOP ~ YEAR + SPECIES_CODE + SEX + AGE,
-                     data = age_comp,
-                     FUN = function(x) round(x = sum(x))) )
-
+  age_comp <- aggregate(AGEPOP ~ SURVEY + YEAR + SPECIES_CODE + SEX + AGE,
+                        data = age_comp,
+                        FUN = function(x) round(x = sum(x)))
+  
+  ## Merge Area Descriptions
+  age_comp <- merge(x = age_comp, 
+                    y = AFSC.GAP.DBE::design_table,
+                    by = c("SURVEY", "YEAR"))
+  age_comp <- merge(x = age_comp, 
+                    y = subset(AFSC.GAP.DBE::new_subarea_descriptions,
+                               TYPE == "REGION"),
+                    by = c("SURVEY", "DESIGN_YEAR"))
+  
+  return( subset(x = age_comp,
+                 select = c(SURVEY, YEAR, TYPE, AREA_ID, DESCRIPTION, 
+                            SPECIES_CODE, SEX, AGE, AGEPOP))  )
+  
 }

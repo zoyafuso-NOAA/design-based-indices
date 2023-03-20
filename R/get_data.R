@@ -27,14 +27,14 @@
 #' 
 
 get_data <- function(year_set = c(1996, 1999),
-                     survey_set = c("GOA", "AI", "EBS_SHELF", "NBS_SHELF")[1],
+                     survey_set = c("GOA", "AI", "EBS", "NBS")[1],
                      spp_codes = data.frame("SPECIES_CODE" = 21720, 
                                             "GROUP" = 21720),
                      haul_type = 3,
                      abundance_haul = c("Y", "N")[1],
                      sql_channel = NULL,
                      pull_lengths = F) {
-
+  
   ## Error Query: Check that spp_codes is a dataframe with GROUP, SPECIES_CODE
   if (class(spp_codes) != "data.frame") {
     stop("argument `spp_codes` must be a dataframe with column names 
@@ -57,34 +57,63 @@ get_data <- function(year_set = c(1996, 1999),
   ##   First . 
   ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   
-  ## Error Query: check that only one survey area is specified. In the future, 
-  ##              this function should be able to include > 1 survey area.
-  switch(paste0(length(survey_set)), 
-         "0" = stop("You must specify a region: "), 
-         "1" = NULL,
-         stop("At this time, you can only specify one region"))
-  
-  ## Error Query: survey_set is one the correct options..
-  if (!survey_set %in% c(c("GOA", "AI", "EBS_SHELF", "NBS_SHELF"))) {
-    stop(paste0("argument survey_set = '", survey_set, "' is not an option. ",
-                "Choose from one of these options: 'GOA', 'AI', ", 
-                "'EBS_SHELF', or 'NBS_SHELF'. At this time, the 'EBS_SLOPE' ",
+  ## Error Query: argument survey_set is one the correct options.
+  if (length(survey_set) == 0 |
+      !all(survey_set %in% c("GOA", "AI", "EBS", "NBS"))) {
+    
+    survey_set[which(!survey_set %in% c("GOA", "AI", "EBS", "NBS"))]
+    
+    stop(paste0("arg survey_set must contain one or more of these options",
+                " (case-sensitive): 
+                'GOA', 'AI', 'EBS', or 'NBS'. 
+                At this time, the 'EBS_SLOPE' ",
                 "is not an option."))
   }
   
   cat("Pulling cruise data...\n")
   
   ## Query cruise data and filter survey regions of interest
-  region_vec <- 
-    paste0("(", paste0("'", survey_set, "'", collapse=", "), ")") 
   year_vec <- 
     paste0("(", paste0(year_set, collapse=", "), ")") 
   
+  survey_def_ids <- c("AI" = 52,
+                      "GOA" = 47, 
+                      "EBS" = 98, 
+                      "NBS" = 143)[survey_set]
+  survey_def_ids_vec <- 
+    paste0("(", paste0(survey_def_ids, collapse=", "), ")") 
+  
   cruise_data <- 
-    RODBC::sqlQuery(channel = sql_channel, 
-                    query = paste0("SELECT * FROM SAFE.SURVEY WHERE SURVEY IN ",
-                                   region_vec, " AND YEAR IN ", year_vec))
-  names(cruise_data)[names(cruise_data) == "SURVEY"] <- "REGION"
+    RODBC::sqlQuery(
+      channel = sql_channel, 
+      query = paste0("SELECT DISTINCT YEAR, SURVEY_DEFINITION_ID, REGION, CRUISE ",
+                     "FROM RACE_DATA.V_CRUISES WHERE ",
+                     "SURVEY_DEFINITION_ID IN ", survey_def_ids_vec, 
+                     " AND YEAR IN ", year_vec))
+  
+  ## Attach CRUISEJOIN to the cruise data
+  CRUISEJOIN <-     
+    RODBC::sqlQuery(
+      channel = sql_channel, 
+      query = paste0("SELECT REGION, CRUISE, CRUISEJOIN FROM RACEBASE.CRUISE"))
+  
+  cruise_data <- 
+    merge(x = cruise_data,
+          y = CRUISEJOIN,
+          by = c("REGION", "CRUISE"))
+  
+  ## Attach survey definition id to the cruise data
+  cruise_data <-
+    merge(x = cruise_data, 
+          y = data.frame(SURVEY_DEFINITION_ID = survey_def_ids,
+                         SURVEY = names(survey_def_ids)),
+          by = "SURVEY_DEFINITION_ID")
+  
+  ## Attach design year to the cruise data
+  cruise_data <-
+    merge(x = cruise_data,
+          y = AFSC.GAP.DBE::design_table,
+          by = c("SURVEY", "YEAR"))
   
   ## Error Query: stop if there is no cruise data for the year and region.
   if(nrow(cruise_data) == 0) {
@@ -98,54 +127,17 @@ get_data <- function(year_set = c(1996, 1999),
   #####################################################################
   cat("Pulling stratum data...\n")
   
-  stratum_data <- data.frame()
-  if (any(survey_set %in% c("GOA", "AI"))) {
-    ## GOA and AI strata currently live in the GOA.GOA_STRATA table
-    ## so we pull that table and filter for survey_set
-    aigoa_stratum_data <- RODBC::sqlQuery(channel = sql_channel, 
-                                          query = "SELECT * FROM GOA.GOA_STRATA")
-    aigoa_stratum_data <- subset(x = aigoa_stratum_data, 
-                                 subset = aigoa_stratum_data$SURVEY %in% survey_set,
-                                 select = c("SURVEY", "STRATUM", 
-                                            "AREA", "DESCRIPTION"))
-    stratum_data <- rbind(stratum_data, aigoa_stratum_data)
-  }
+  stratum_data <- 
+    merge(x = AFSC.GAP.DBE::new_stratum_table[, c("SRVY", "YEAR", "STRATUM", 
+                                                  "DESCRIPTION", "AREA_KM2")], 
+          by.x = c("SRVY", "YEAR"),
+          y = cruise_data[!duplicated(cruise_data[, c("SURVEY", 
+                                                      "DESIGN_YEAR")]), 
+                          c("SURVEY", "DESIGN_YEAR")], 
+          by.y = c("SURVEY", "DESIGN_YEAR"))
   
-  if (any(survey_set %in% c("EBS_SHELF", "NBS_SHELF"))) {
-    ## BS strata live in the RACEBASE.STRATUM table. Stratum records are 
-    ## are periodically updated when stratum areas change (e.g., dropping
-    ## stations). So, we only pull the most recent record for a given stratum.
-    stratum_df <- rbind(data.frame(region = "EBS_SHELF",
-                                   stratum = c(10,20,31,32,41,42,
-                                               43,50,61,62,82,90)),
-                        data.frame(region = "NBS_SHELF",
-                                   stratum = c(70,71,81)))
-    stratum_vec <- 
-      paste0("(", 
-             paste0(subset(x = stratum_df, 
-                           subset = region %in% survey_set)$stratum, 
-                    collapse=", "), 
-             ")") 
-    
-    bs_stratum_data <- 
-      RODBC::sqlQuery(channel = sql_channel, 
-                      query = paste0("SELECT * FROM RACEBASE.STRATUM WHERE ",
-                                     "STRATUM IN ", stratum_vec))
-    
-    ## Grab the most recent year for a given stratum
-    bs_stratum_data <- 
-      do.call(what = rbind,
-              args = lapply(X = split(x = bs_stratum_data, 
-                                      f = bs_stratum_data$STRATUM),
-                            FUN = function(x) x[which.max(x$YEAR), ] ))
-    
-    bs_stratum_data <- subset(x = bs_stratum_data, 
-                              select = c("REGION", "STRATUM", 
-                                         "AREA", "DESCRIPTION"))
-    names(bs_stratum_data)[1] <- "SURVEY"
-    
-    stratum_data <- rbind(stratum_data, bs_stratum_data)
-  }
+  stratum_data <- stratum_data[order(stratum_data$SRVY, stratum_data$STRATUM),]
+  names(stratum_data)[names(stratum_data) == "SRVY"] <- "SURVEY"
   
   ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ## Query Haul data based on the CRUISEJOIN values in the cruise_data
@@ -167,17 +159,14 @@ get_data <- function(year_set = c(1996, 1999),
   ## Subset years of interest based on START_TIME and abundance_haul types
   haul_data <- 
     subset(x = haul_data, 
-           subset = as.numeric(format(x = haul_data$START_TIME, 
-                                      format = "%Y")) %in% year_set &
+           subset = #as.numeric(format(x = haul_data$START_TIME, 
+                     #                 format = "%Y")) %in% year_set &
              haul_data$ABUNDANCE_HAUL %in% abundance_haul)
   
   ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ##   Query catch data based on cruisejoin values in haul_data and species set
   ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   cat("Pulling catch data...\n")
-  
-  cruisejoin_vec <-
-    paste0("(", paste(unique(haul_data$CRUISEJOIN), collapse=", "), ")")
   
   avail_spp <-
     RODBC::sqlQuery(channel = sql_channel,
@@ -235,21 +224,13 @@ get_data <- function(year_set = c(1996, 1999),
   ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ##   Query Specimen information
   ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  region_vec <- 
-    paste0("(", paste0("'", 
-                       ifelse(test = survey_set %in% c("EBS_SHELF", 
-                                                       "NBS_SHELF"),
-                              yes = "BS", 
-                              no = survey_set), 
-                       "'", collapse=", "), ")") 
-  
   speclist <- RODBC::sqlQuery(
     channel = sql_channel, 
     query = paste0("select s.SPECIES_CODE, s.cruisejoin, s.hauljoin, ",
                    "s.region, s.vessel, s.cruise, s.haul, s.specimenid, ",
                    "s.length, s.sex, s.weight, s.age  from ",
                    "racebase.specimen s where ",
-                   "REGION in ", region_vec, " and ",
+                   # "REGION in ", region_vec, " and ",
                    "CRUISEJOIN in ", cruisejoin_vec, " and ",
                    "SPECIES_CODE in ", spp_codes_vec))
   

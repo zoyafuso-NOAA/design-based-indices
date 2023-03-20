@@ -14,3 +14,6 @@ Imports:
     RODBC,
     getPass,
     stats
+Depends: 
+    R (>= 2.10)
+LazyData: true

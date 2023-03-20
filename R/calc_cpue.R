@@ -27,11 +27,12 @@ calc_cpue <- function(racebase_tables = NULL) {
                    "haul$abundance_haul == 'Y'. "))
   }
   
-  ## Merge cruise data with haul data using the CRUISEJOIN and REGION as 
+  ## Merge cruise data with haul data using the CRUISEJOIN as 
   ## keys. Have not tested with multiple regions. 
-  dat <- merge(x = haul, 
-               y = cruisedat, 
-               by = c("CRUISEJOIN") )
+  # dat <- haul
+  dat <- merge(x = haul,
+             y = cruisedat[, c("CRUISEJOIN", "SURVEY", "DESIGN_YEAR")],
+             by = c("CRUISEJOIN") )
   
   ##  `dat` only has non-zero records. To fill in zero-weight records, we 
   ## first create a table of all combos of HAULJOIN and SPECIES_CODE.
@@ -50,7 +51,7 @@ calc_cpue <- function(racebase_tables = NULL) {
   
   ## Merge catch data with dat using the HAULJOIN as the key
   dat <- merge(x = dat, 
-               y = catch, 
+               y = catch[, c("GROUP", "HAULJOIN", "WEIGHT", "NUMBER_FISH")], 
                by = c("GROUP", "HAULJOIN"), 
                all.x = TRUE)
   
@@ -70,8 +71,9 @@ calc_cpue <- function(racebase_tables = NULL) {
   ## reorder columns, rename some
   dat <- with(dat,
               data.frame(YEAR = as.numeric(format(START_TIME, format = "%Y")),
-                         CRUISEJOIN = CRUISEJOIN, HAULJOIN, VESSEL = VESSEL.x, 
-                         HAUL = HAUL, HAUL_TYPE, PERFORMANCE, DURATION, STRATUM, 
+                         SURVEY = SURVEY, CRUISEJOIN = CRUISEJOIN, HAULJOIN, 
+                         HAUL = HAUL, HAUL_TYPE, PERFORMANCE, DURATION, 
+                         DESIGN_YEAR, STRATUM, 
                          STATIONID, 
                          START_LATITUDE, END_LATITUDE, 
                          START_LONGITUDE, END_LONGITUDE,

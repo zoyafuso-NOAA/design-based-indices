@@ -22,16 +22,53 @@ calc_size_stratum_BS <- function(racebase_tables = NULL,
          have size information or rerun AFSC.GAP.DBE::get_data() with 
          argument pull_lengths = TRUE")
   
+  ## Warning message if there are EBS data contained in racebase_tables
+  if ("AI" %in% racebase_tables$cruise$SURVEY | 
+      "GOA" %in% racebase_tables$cruise$SURVEY)
+    warning("AI and/or GOA data are included in the input data. This function
+       only applies the size composition to the EBS/NBS. 
+       Use AFSC.GAP.DBE::calc_size_stratum_AIGOA() to calculate the size 
+       composition to the AI/GOA.")
+  
+  ## Subset only AI/GOA data from the cruise data. If there are no AI/GOA
+  ## cruises in the dataset, send out an error to use the other size comp fn. 
+  cruise <- subset(x = racebase_tables$cruise,
+                   subset = SURVEY %in% c("NBS", "EBS"))
+  
+  if (nrow(cruise) == 0){
+    stop("EBS or NBS cruises are not in argument racebase_tables$cruise.
+         This function only applies the size composition to the EBS/NBS. 
+         Use AFSC.GAP.DBE::calc_size_stratum_AIGOA() to calculate the size 
+         composition to the AI/GOA.")
+  }
+  
   ## Extract data objects
-  size <- racebase_tables$size
-  cpue <- racebase_cpue
-  haul <- racebase_tables$haul
+  
+  haul <- subset(x = racebase_tables$haul,
+                 subset = CRUISEJOIN %in% cruise$CRUISEJOIN)
   haul$YEAR <- as.numeric(format(haul$START_TIME, format = "%Y"))
-  catch <- racebase_tables$catch
+  haul <- merge(x = haul, 
+                y = cruise[, c("CRUISEJOIN", "SURVEY")])
+  
+  cpue <- subset(x = racebase_cpue, 
+                 subset = CRUISEJOIN %in% cruise$CRUISEJOIN)
+  size <- subset(x = racebase_tables$size, 
+                 subset = HAULJOIN %in% haul$HAULJOIN)
+  size <- merge(x = size,
+                y = cpue[, c("HAULJOIN", "SURVEY")])
+  
+  catch <- subset(x = racebase_tables$catch,
+                  subset = HAULJOIN %in% haul$HAULJOIN)
   catch$SPECIES_CODE <- catch$GROUP
+  catch <- merge(x = catch,
+                y = cruise[, c("CRUISEJOIN", "SURVEY")])
+  
+  racebase_stratum_popn <- subset(x = racebase_stratum_popn, 
+                                  SURVEY %in% c("EBS", "NBS"))
+  racebase_stratum_popn$SPECIES_CODE <- racebase_stratum_popn$GROUP
   
   ## Attach year and stratum information to size df
-  size <- merge(x = size[, c("HAULJOIN", "REGION", "SPECIES_CODE", "LENGTH",
+  size <- merge(x = size[, c("HAULJOIN", "SURVEY", "SPECIES_CODE", "LENGTH",
                              "FREQUENCY", "SEX")], 
                 y = haul[, c("HAULJOIN", "YEAR", "STRATUM")],
                 by = "HAULJOIN")
@@ -58,13 +95,13 @@ calc_size_stratum_BS <- function(racebase_tables = NULL,
   ## s_ijk and NUMCPUE_IND_KM2 are merged into the size df by joining 
   ##     via the HAULJOIN value and species code so that calculations can
   ##     be vectorized easily.
-
-
+  
+  
   s_ijk <- stats::aggregate(
-    FREQUENCY ~ YEAR + STRATUM + HAULJOIN + SPECIES_CODE,
+    FREQUENCY ~ SURVEY + YEAR + STRATUM + HAULJOIN + SPECIES_CODE,
     data = size,
     FUN = sum)
-  names(s_ijk)[5] <- "s_ijk"
+  names(s_ijk)[names(s_ijk) == "FREQUENCY"] <- "s_ijk"
   
   size <- merge(x = size, 
                 y = s_ijk[, c("SPECIES_CODE", "HAULJOIN", "s_ijk")],
@@ -93,27 +130,28 @@ calc_size_stratum_BS <- function(racebase_tables = NULL,
   ##    1985 assumes one year of data so there is no year index in their 
   ##    paper but this function has the capability of calculating size comps
   ##    for multiple years of data.
-
-  S_ik <- stats::aggregate(S_ijklm ~ YEAR + STRATUM + SPECIES_CODE,
+  
+  S_ik <- stats::aggregate(S_ijklm ~ SURVEY + YEAR + STRATUM + SPECIES_CODE,
                            data = size,
                            FUN = sum)
-  names(S_ik)[4] <- "S_ik"
+  names(S_ik)[names(S_ik) == "S_ijklm"] <- "S_ik"
   
   S_iklm <- 
-    stats::aggregate(S_ijklm ~ YEAR + STRATUM + SPECIES_CODE + LENGTH + SEX,
+    stats::aggregate(S_ijklm ~ SURVEY + YEAR + STRATUM + SPECIES_CODE + 
+                       LENGTH + SEX,
                      data = size,
                      FUN = sum)
-  names(S_iklm)[6] <- "S_iklm" 
+  names(S_iklm)[names(S_iklm) == "S_ijklm"] <- "S_iklm" 
   
   S_iklm <- merge(x = S_iklm,
                   y = S_ik,
-                  by = c("YEAR", 'STRATUM', "SPECIES_CODE"))
+                  by = c("SURVEY", "YEAR", 'STRATUM', "SPECIES_CODE"))
   
   S_iklm <- merge(x = S_iklm,
-                  by.x = c("YEAR", 'STRATUM', "SPECIES_CODE"),
-                  y = racebase_stratum_popn[c("YEAR", 'STRATUM', 
+                  by.x = c("SURVEY", "YEAR", 'STRATUM', "SPECIES_CODE"),
+                  y = racebase_stratum_popn[c("SURVEY", "YEAR", 'STRATUM', 
                                               "GROUP", "POPULATION_COUNT")],
-                  by.y = c("YEAR", 'STRATUM', "GROUP"),
+                  by.y = c("SURVEY", "YEAR", 'STRATUM', "GROUP"),
                   all.y = TRUE)
   
   ## For some strata in some years, lengths were not collected so the stratum
@@ -138,7 +176,8 @@ calc_size_stratum_BS <- function(racebase_tables = NULL,
   P_iklm <- 
     stats::reshape(data = S_iklm, 
                    v.names = "NUMBER", 
-                   idvar = c("YEAR", 'STRATUM', "SPECIES_CODE", "LENGTH"),
+                   idvar = c("SURVEY", "YEAR", 'STRATUM', "SPECIES_CODE", 
+                             "LENGTH"),
                    timevar = "SEX", 
                    direction = "wide")
   
@@ -150,7 +189,7 @@ calc_size_stratum_BS <- function(racebase_tables = NULL,
   
   ## Order sexes to M, F, U, TOTAL. Set NAs to zero. 
   P_iklm <- subset(P_iklm, 
-                   select = c(YEAR, STRATUM, SPECIES_CODE, LENGTH,   
+                   select = c(SURVEY, YEAR, STRATUM, SPECIES_CODE, LENGTH,   
                               MALES, FEMALES, UNSEXED))
   na_idx <- is.na(P_iklm[, c("MALES", "FEMALES", "UNSEXED")])
   P_iklm[, c("MALES", "FEMALES", "UNSEXED")][na_idx] <- 0
@@ -161,8 +200,8 @@ calc_size_stratum_BS <- function(racebase_tables = NULL,
             na.rm = TRUE)
   
   ## Reorder rows by size
-  P_iklm <- P_iklm[order(P_iklm$YEAR, P_iklm$STRATUM, P_iklm$SPECIES_CODE,
-                         P_iklm$LENGTH), ]
+  P_iklm <- P_iklm[order(P_iklm$SURVEY, P_iklm$YEAR, P_iklm$STRATUM, 
+                         P_iklm$SPECIES_CODE, P_iklm$LENGTH), ]
   
   ## Add units to LENGTH column name
   names(P_iklm)[names(P_iklm) == "LENGTH"] <- "LENGTH_MM"
